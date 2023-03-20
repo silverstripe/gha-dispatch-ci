@@ -1,0 +1,105 @@
+name: Dispatch CI
+description: GitHub Action to trigger ci.yml workflow_dispatch event via GitHub API
+
+runs:
+  using: composite
+  steps:
+
+    - name: Get type
+      id: gettype
+      shell: bash
+      env:
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        # repository that has a twice-weekly schedule run on consequtive days - use day of week
+        date_part=$(date +%u)
+        type=""
+        if [[ $GITHUB_REPOSITORY == "silverstripe/installer" ]] || \
+            [[ $GITHUB_REPOSITORY == "silverstripe/recipe-kitchen-sink" ]]
+        then
+          # respository that has daily schedule - use hour
+          date_part=$(date +%H)
+        fi
+        if (( $date_part % 2 == 1 )); then
+          # latest major, next-minor e.g. "5"
+          type=latest,next-minor
+        else
+          # previous major, next-patch e.g. "4.13"
+          type=previous,next-patch
+        fi
+        echo "type=$type" >> $GITHUB_OUTPUT
+
+    - name: Get branch
+      id: getbranch
+      shell: bash
+      env:
+        TYPE: ${{ steps.gettype.outputs.type }}
+      run: |
+        major_type=$(echo $TYPE | cut -d "," -f 1)
+        minor_type=$(echo $TYPE | cut -d "," -f 2)
+        # https://docs.github.com/en/rest/branches/branches#list-branches
+        RESP_CODE=$(curl -w %{http_code} -s -L -o __branches.json \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${{ github.token }}"\
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          https://api.github.com/repos/$GITHUB_REPOSITORY/branches \
+        )
+        if [[ $RESP_CODE != "200" ]]; then
+          echo "Failed to list branches - HTTP response code was $RESP_CODE"
+          exit 1
+        fi
+        major_branch=""
+        minor_branch=""
+        major_branches=$(jq -r '.[] | select(.name | test("^[0-9]+$")) | .name' __branches.json | sort -V -r)
+        # "major_branches" needs to be quoted to preserve line-breaks
+        major_branches_count=$(echo "$major_branches" | wc -l)
+        if [[ $major_type == "latest" ]]; then
+            if (( $major_branches_count < 1 )); then
+                echo "No major branches found"
+                exit 1
+            fi
+            major_branch=$(echo "$major_branches" | head -1)
+        elif [[ $major_type == "previous" ]]; then
+            if (( $major_branches_count < 2 )); then
+                echo "Only one major branch found"
+                exit 1
+            fi
+            major_branch=$(echo "$major_branches" | head -2 | tail -1)
+        fi
+        if [[ $minor_type == "next-patch" ]]; then
+            # not escaping rx . as \. because jq will say it is a compile error
+            minor_branches=$(jq -r ".[] | select(.name | test(\"^$major_branch.[0-9]+$\")) | .name" __branches.json | sort -V -r)
+            minor_branches_count=$(echo "$minor_branches" | wc -l)
+            if (( $minor_branches_count < 1 )); then
+                echo "No minor branches found"
+                exit 1
+            fi
+            minor_branch=$(echo "$minor_branches" | head -1)
+        fi
+        branch=$major_branch
+        if [[ $minor_branch != "" ]]; then
+            branch="$minor_branch"
+        fi
+        rm __branches.json
+        echo "branch is $branch"
+        echo "branch=$branch" >> $GITHUB_OUTPUT
+
+    - name: Send API request
+      shell: bash
+      env:
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        REF: ${{ steps.getbranch.outputs.branch }}
+      run: |
+        # https://docs.github.com/en/rest/actions/workflows?apiVersion=2022-11-28#create-a-workflow-dispatch-event
+        RESP_CODE=$(curl -w %{http_code} -s -L -o /dev/null \
+          -X POST \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${{ github.token }}"\
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/dispatches \
+          -d "{\"ref\":\"$REF\"}"
+        )
+        if [[ $RESP_CODE != "204" ]]; then
+          echo "Failed to dispatch workflow - HTTP response code was $RESP_CODE"
+          exit 1
+        fi
