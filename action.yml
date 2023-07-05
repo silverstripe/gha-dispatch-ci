@@ -11,8 +11,8 @@ runs:
       env:
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: |
-        # repository that has a twice-weekly schedule run on consequtive days - use day of week
-        date_part=$(date +%u)
+        # repository that has a twice-weekly schedule run on consecutive days - use day of year
+        date_part=$(date +%-j)
         type=""
         if [[ $GITHUB_REPOSITORY == "silverstripe/installer" ]] || \
             [[ $GITHUB_REPOSITORY == "silverstripe/recipe-kitchen-sink" ]]
