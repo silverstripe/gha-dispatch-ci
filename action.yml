@@ -61,8 +61,8 @@ runs:
             major_branch=$(echo "$major_branches" | head -1)
         elif [[ $major_type == "previous" ]]; then
             if (( $major_branches_count < 2 )); then
-                echo "Only one major branch found"
-                exit 1
+                echo "Only one major branch found, not running CI on this cycle - will run on next cycle"
+                exit 0
             fi
             major_branch=$(echo "$major_branches" | head -2 | tail -1)
         fi
