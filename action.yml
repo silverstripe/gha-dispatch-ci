@@ -21,8 +21,8 @@ runs:
           date_part=$(date +%H)
         fi
         if (( $date_part % 2 == 1 )); then
-          # latest major, next-minor e.g. "5"
-          type=latest,next-minor
+          # current major, next-minor e.g. "5"
+          type=current,next-minor
         else
           # previous major, next-patch e.g. "4.13"
           type=previous,next-patch
@@ -34,13 +34,14 @@ runs:
       shell: bash
       env:
         TYPE: ${{ steps.gettype.outputs.type }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
       run: |
         major_type=$(echo $TYPE | cut -d "," -f 1)
         minor_type=$(echo $TYPE | cut -d "," -f 2)
         # https://docs.github.com/en/rest/branches/branches#list-branches
         RESP_CODE=$(curl -w %{http_code} -s -L -o __branches.json \
           -H "Accept: application/vnd.github+json" \
-          -H "Authorization: Bearer ${{ github.token }}"\
+          -H "Authorization: Bearer ${{ github.token }}" \
           -H "X-GitHub-Api-Version: 2022-11-28" \
           https://api.github.com/repos/$GITHUB_REPOSITORY/branches \
         )
@@ -48,39 +49,60 @@ runs:
           echo "Failed to list branches - HTTP response code was $RESP_CODE"
           exit 1
         fi
+        RESP_CODE=$(curl -w %{http_code} -s -L -o __tags.json \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${{ github.token }}" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          https://api.github.com/repos/$GITHUB_REPOSITORY/tags \
+        )
+        if [[ $RESP_CODE != "200" ]]; then
+          echo "Failed to list tags - HTTP response code was $RESP_CODE"
+          exit 1
+        fi
         major_branch=""
         minor_branch=""
         major_branches=$(jq -r '.[] | select(.name | test("^[0-9]+$")) | .name' __branches.json | sort -V -r)
         # "major_branches" needs to be quoted to preserve line-breaks
         major_branches_count=$(echo "$major_branches" | wc -l)
-        if [[ $major_type == "latest" ]]; then
-            if (( $major_branches_count < 1 )); then
-                echo "No major branches found"
-                exit 1
-            fi
-            major_branch=$(echo "$major_branches" | head -1)
-        elif [[ $major_type == "previous" ]]; then
-            if (( $major_branches_count < 2 )); then
-                echo "Only one major branch found, not running CI on this cycle - will run on next cycle"
-                exit 0
-            fi
+        if (( $major_branches_count < 1 )); then
+          echo "No major branches found, cannot continue"
+          exit 1
+        fi
+        latest_major_branch=$(echo "$major_branches" | head -1)
+        latest_major_stable_tags_count=0
+        # not escaping rx . as \. because jq will say it is a compile error
+        latest_major_stable_tags=$(jq -r ".[] | select(.name | test(\"^$latest_major_branch.[0-9]+.[0-9]+$\")) | .name" __tags.json | sort -V -r)
+        if [[ "$latest_major_stable_tags" != "" ]]; then
+          latest_major_stable_tags_count=$(echo "$latest_major_stable_tags" | wc -l)
+        fi
+        if [[ $major_type == "current" ]]; then
+          major_branch=$(echo "$major_branches" | head -1)
+          if (( $latest_major_stable_tags_count == 0 )) && (( $major_branches_count >= 2 )); then
             major_branch=$(echo "$major_branches" | head -2 | tail -1)
+          fi
+        elif [[ $major_type == "previous" ]]; then
+          if (( $major_branches_count < 2 )); then
+            echo "Only one major branch found, not running CI on this cycle - will run on next cycle"
+            exit 0
+          fi
+          major_branch=$(echo "$major_branches" | head -2 | tail -1)
+          if (( $latest_major_stable_tags_count == 0 )) && (( $major_branches_count >= 3 )); then
+            major_branch=$(echo "$major_branches" | head -3 | tail -1)
+          fi
         fi
         if [[ $minor_type == "next-patch" ]]; then
-            # not escaping rx . as \. because jq will say it is a compile error
-            minor_branches=$(jq -r ".[] | select(.name | test(\"^$major_branch.[0-9]+$\")) | .name" __branches.json | sort -V -r)
-            minor_branches_count=$(echo "$minor_branches" | wc -l)
-            if (( $minor_branches_count < 1 )); then
-                echo "No minor branches found"
-                exit 1
-            fi
-            minor_branch=$(echo "$minor_branches" | head -1)
+          minor_branches=$(jq -r ".[] | select(.name | test(\"^$major_branch.[0-9]+$\")) | .name" __branches.json | sort -V -r)
+          minor_branches_count=$(echo "$minor_branches" | wc -l)
+          if (( $minor_branches_count == 0 )); then
+            echo "No minor branches found on major branch $major_branch when minor_type is next-patch, cannot continue"
+            exit 1
+          fi
+          minor_branch=$(echo "$minor_branches" | head -1)
         fi
         branch=$major_branch
         if [[ $minor_branch != "" ]]; then
-            branch="$minor_branch"
+          branch="$minor_branch"
         fi
-        rm __branches.json
         echo "branch is $branch"
         echo "branch=$branch" >> $GITHUB_OUTPUT
 
@@ -102,4 +124,15 @@ runs:
         if [[ $RESP_CODE != "204" ]]; then
           echo "Failed to dispatch workflow - HTTP response code was $RESP_CODE"
           exit 1
+        fi
+
+    - name: Delete temporary files
+      shell: bash
+      if: always()
+      run: |
+        if [[ -f __branches.json ]]; then
+          rm __branches.json
+        fi
+        if [[ -f __tags.json ]]; then
+          rm __tags.json
         fi
