@@ -2,15 +2,11 @@
 
 Used to trigger CI workflows on a schedule. This workflow allows multiple branches to have CI workflows run on a schedule, rather than just the default branch.
 
-For modules that are to be scheduled once per week, the cron must be run two times per week on consecutive days. This is done because there is logic in action.yml to run one job for the latest patch branch on the previous major on "even" days of the week and the next minor branch for the current major on "odd" days of the week.
+For modules that are to be scheduled once per week, the cron must be run three times per week on consecutive days. This is done because there is logic in action.yml to run one jobs on consecutive days for:
 
-For builds that are to be scheduled once per day, specifically `silverstripe/installer` and `silverstripe/recipe-kitchen-sink`, the cron must be run two times per day on consecutive hours, because for these modules branches on the previous major version are run on "even" hours and branches on the current major version are run on "odd" hours.
-
-### Disabling branches on previous major version
-
-If the previous major version reaches the point in its life cycle where it is only receiving security fixes and no longer needs the cron job to run, it can be disabled by setting `RUN_BRANCHES_ON_PREVIOUS_MAJOR: "false"` in the `Check if should dispatch workflow` step in `actions.yml`.
-
-Remember to set this to `true` when a new major version is released.
+- Current major, next-minor e.g. "6"
+- Current major, next-patch e.g. "6.0"
+- Previous major, next-patch e.g. "5.4"
 
 ### Usage
 
@@ -19,9 +15,30 @@ Remember to set this to `true` when a new major version is released.
 name: Dispatch CI
 
 on:
-  # Every Tuesday,Wednesday at 1:00pm UTC
+  # Every Tuesday,Wednesday,Thursday at 1:00pm UTC
   schedule:
-    - cron: '0 13 * * 2,3'
+    - cron: '0 13 * * 2,3,4'
+  workflow_dispatch:
+    inputs:
+      major_type:
+        description: 'Major branch type'
+        required: true
+        type: choice
+        options:
+          - 'dynamic'
+          - 'current'
+          - 'next'
+          - 'previous'
+        default: 'dynamic'
+      minor_type:
+        description: 'Minor branch type'
+        required: true
+        type: choice
+        options:
+          - 'dynamic'
+          - 'next-minor'
+          - 'next-patch'
+        default: 'dynamic'
 
 permissions: {}
 
@@ -37,14 +54,17 @@ jobs:
     steps:
       - name: Dispatch CI
         uses: silverstripe/gha-dispatch-ci@v1
+        with:
+          major_type: ${{ inputs.major_type }}
+          minor_type: ${{ inputs.minor_type }}
 ```
 
 ### Inputs:
 
 #### Major Type
-The major version type to target, can be `dynamic`, `current`, `next`, `previous`. Default is `dynamic`.
+The major version type to target, can be `(blank)`, `dynamic`, `current`, `next`, `previous`. Default is `dynamic`.
 `major_type: current`
 
 #### Minor Type
-The minor version type to target, can be `dynamic`, `next-minor`, `next-patch`. Default is `dynamic`.
+The minor version type to target, can be `(blank)`, `dynamic`, `next-minor`, `next-patch`. Default is `dynamic`.
 `minor_type: next-minor`
